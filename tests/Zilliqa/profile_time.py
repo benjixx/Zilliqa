@@ -25,23 +25,28 @@ import re
 try:
 	from sortedcontainers import SortedDict
 except ImportError:
-	sys.exit("""You need sortedcontainers!
-              install it by pip install sortedcontainers""")
-
-import xml.etree.cElementTree as ET
-
-NODE_LISTEN_PORT = 5001
-LOCAL_RUN_FOLDER = './local_run/'
+	sys.exit("""You need sortedcontainers! Install it by run 'sudo python -m pip install sortedcontainers'""")
 
 STATE_LOG_FILE = 'state-00001-log.txt'
 KEYWORD_DSCON = '[DSCON]'
+KEYWORD_MBCON = '[MICON]'
+KEYWORD_FBCON = '[FBCON]'
 KEYWORD_BEGIN = 'BGIN'
 KEYWORD_DONE = 'DONE'
 
+class Consensus:
+	blockNumber = 0
+	index = 0
+	name = ''
+	startTime = ''
+	endTime = ''
+	timeSpan = 0
+
+MBConsensusDict = SortedDict()
+FBConsensusDict = SortedDict()
+
 DSConsensusStartTime = SortedDict()
 DSConsensusEndTime = SortedDict()
-MBConsensusTime = SortedDict()
-FBConsensusTime = SortedDict()
 
 def print_usage():
 	print ("Profile consensus and communication time from state logs\n"
@@ -70,28 +75,85 @@ def get_block_number(line):
 
 def scan_file(fileName):
 	file = open(fileName, "r+")
+	mbConsensusStartTime = ''
+	fbConsensusStartTime = ''
 	for line in file:
 		if line.find(KEYWORD_DSCON) != -1:
 			blockNumber = get_block_number(line)
 			if line.find(KEYWORD_BEGIN) != -1:
-				DSConsensusStartTime[blockNumber] = get_time(line)
+				DSConsensusStartTime[blockNumber] = get_time(line)				
 			elif line.find(KEYWORD_DONE) != -1:
 				DSConsensusEndTime[blockNumber] = get_time(line)
+		elif line.find(KEYWORD_MBCON) != -1:
+			blockNumber = get_block_number(line)
+			if line.find(KEYWORD_BEGIN) != -1:
+				mbConsensusStartTime = get_time(line)
+			elif line.find(KEYWORD_DONE) != -1:
+				mbConsensus = Consensus()
+				mbConsensus.blockNumber = blockNumber
+				mbConsensus.startTime = mbConsensusStartTime
+				mbConsensus.endTime = get_time(line)
+				MBConsensusDict.setdefault(blockNumber, []).append(mbConsensus)
+		elif line.find(KEYWORD_FBCON) != -1:
+			blockNumber = get_block_number(line)
+			if line.find(KEYWORD_BEGIN) != -1:
+				fbConsensusStartTime = get_time(line)
+			elif line.find(KEYWORD_DONE) != -1:
+				fbConsensus = Consensus()
+				fbConsensus.blockNumber = blockNumber
+				fbConsensus.startTime = fbConsensusStartTime
+				fbConsensus.endTime = get_time(line)
+				FBConsensusDict.setdefault(blockNumber, []).append(fbConsensus)
+	file.close()
 
 def convert_time_string(strTime):
 	a,b,c,d = strTime.split(':')
 	return int(a)*3600000 + int(b) * 60000 + int(c) * 1000 + int(d)
 
-def printResult():	
+def printResult(outputFile):	
 	DSConsensusStartTimeKeys = DSConsensusStartTime.keys()
 	DSConsensusStartTimeValues = DSConsensusStartTime.values()
 	DSConsensusEndTimeValues = DSConsensusEndTime.values()
-	totalDSBockNumber = min(len(DSConsensusStartTimeValues), len(DSConsensusEndTimeValues))
-	index = 0
-	while index < totalDSBockNumber:
-		timeSpan = convert_time_string(DSConsensusEndTimeValues[index]) - convert_time_string(DSConsensusStartTimeValues[index])
-		print("DS Block\t" + str(DSConsensusStartTimeKeys[index]) + "\t" + DSConsensusStartTimeValues[index] + "\t" + DSConsensusEndTimeValues[index] + "\t" + str(timeSpan))
-		index += 1
+	print("Length of DSConsensusStartTimeKeys " + str(len(DSConsensusStartTimeKeys)))
+
+	MBConsensusDictKeys = MBConsensusDict.keys()
+	MBConsensusDictValues = MBConsensusDict.values()
+	print("Length of MBConsensusDictKeys " + str(len(MBConsensusDictKeys)))
+
+	FBConsensusDictKeys = FBConsensusDict.keys()
+	FBConsensusDictValues = FBConsensusDict.values()
+	print("Length of FBConsensusDictKeys " + str(len(FBConsensusDictKeys)))
+
+	totalFBBlockNumber = len(FBConsensusDictKeys)
+	totalDSBlockNumber = len(DSConsensusEndTimeValues)
+	dsIndex = 0
+	fbIndex = 0
+	mbIndex = 0
+	while fbIndex < totalFBBlockNumber:
+		if DSConsensusStartTimeKeys[dsIndex] == FBConsensusDictKeys[fbIndex]:
+			dsTimeSpan = convert_time_string(DSConsensusEndTimeValues[dsIndex]) - convert_time_string(DSConsensusStartTimeValues[dsIndex])
+			outputFile.write("DS Block\t" + str(DSConsensusStartTimeKeys[dsIndex]) + "\t" + DSConsensusStartTimeValues[dsIndex] + "\t" + DSConsensusEndTimeValues[dsIndex] + "\t" + str(dsTimeSpan) + "\n")
+
+		if mbIndex < len(MBConsensusDictKeys):
+			if (MBConsensusDictKeys[mbIndex] == FBConsensusDictKeys[fbIndex]):
+				for mbConsensus in MBConsensusDictValues[mbIndex]:
+					mbTimeSpan = convert_time_string(mbConsensus.endTime) - convert_time_string(mbConsensus.startTime)
+					outputFile.write("MB Block\t" + str(mbConsensus.blockNumber) + "\t" + mbConsensus.startTime + "\t" + mbConsensus.endTime + "\t" + str(mbTimeSpan) + "\n")
+				mbIndex += 1
+			else:
+				print("Warning: no complete micro block consensus found for block " + str(FBConsensusDictKeys[fbIndex]))
+
+		for fbConsensus in FBConsensusDictValues[fbIndex]:
+			fbTimeSpan = convert_time_string(fbConsensus.endTime) - convert_time_string(fbConsensus.startTime)
+			outputFile.write("FB Block\t" + str(fbConsensus.blockNumber) + "\t" + fbConsensus.startTime + "\t" + fbConsensus.endTime + "\t" + str(fbTimeSpan) + "\n")
+
+		fbIndex += 1
+
+		if fbIndex >= totalFBBlockNumber:
+			break
+
+		if (dsIndex < len(DSConsensusStartTimeKeys) - 1 and DSConsensusStartTimeKeys[dsIndex + 1] == FBConsensusDictKeys[fbIndex]):
+			dsIndex += 1
 
 def main():
 	numargs = len(sys.argv)
@@ -111,22 +173,14 @@ def main():
 			print_usage()
 			return
 
-		#os.chdir(stateLogPath)
-		#for file in glob.glob(".txt"):
-		#	print(file)
-		#for file in os.listdir(stateLogPath):
-		#	print(file)
-		#	if file == STATE_LOG_FILE:
-		#		print(os.path.join(stateLogPath, file))
-		#for root, dirnames, filenames in os.walk(stateLogPath):
-		#	for filename in fnmatch.filter(filenames, STATE_LOG_FILE):
-		#		print(filename)
 		fileNames = find_files(stateLogPath, STATE_LOG_FILE)
 		for fileName in fileNames:
 			print("Checking file: " + fileName)
 			scan_file(fileName)
 
-		printResult()
+		printResult(outputFile)
+
+		outputFile.close()
 
 if __name__ == "__main__":
 	main()
